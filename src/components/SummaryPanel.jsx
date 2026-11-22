@@ -15,8 +15,9 @@ import * as CFG from '../config';
    - 前年が月の途中から始まる月は前年比の対象外（参考扱い）
    ══════════════════════════════════════════════════════════ */
 
-const DEPTS = CFG.DEPTS;
-const SUB_DEPTS = CFG.SUB_DEPTS;
+// 月次サマリでは SUMMARY_MERGE の部門を合算先に寄せ、データのない部門は出さない（buildIndex で確定）
+let SUB_DEPTS = CFG.SUB_DEPTS.slice();
+let DEPTS = ['全体'].concat(SUB_DEPTS);
 const DC = CFG.DC;
 const INK = '#2b2b2b';
 const SUB = '#8a877f';
@@ -85,19 +86,30 @@ function normDate(s) {
 
 // ── 集計 ──
 function buildIndex(data) {
+  const merge = CFG.SUMMARY_MERGE || {};
   const idx = {};
-  SUB_DEPTS.forEach(d => {
-    idx[d] = {};
-    const src = data[d] || {};
+  const start = {};   // 部門ごとのデータ開始日（yyyy/mm/dd）
+  CFG.SUB_DEPTS.forEach(src0 => {
+    const d = merge[src0] || src0;
+    if (!idx[d]) idx[d] = {};
+    const src = data[src0] || {};
     Object.keys(src).forEach(k => {
       const r = src[k];
       const dt = normDate((r && r.date) || k);
       if (!dt) return;
+      if (!(+r.sales > 0)) return;
       const ym = dt.slice(0, 7);
       if (!idx[d][ym]) idx[d][ym] = {};
-      idx[d][ym][+dt.slice(8, 10)] = { sales: +r.sales || 0, customers: +r.customers || 0 };
+      const day = +dt.slice(8, 10);
+      const cur = idx[d][ym][day] || { sales: 0, customers: 0 };
+      idx[d][ym][day] = { sales: cur.sales + (+r.sales || 0), customers: cur.customers + (+r.customers || 0) };
+      if (!start[d] || dt < start[d]) start[d] = dt;
     });
   });
+  SUB_DEPTS = CFG.SUB_DEPTS.filter(d => !merge[d] && start[d]);
+  DEPTS = ['全体'].concat(SUB_DEPTS);
+  const all = SUB_DEPTS.map(d => start[d]).sort()[0];
+  idx.__start = Object.assign({ '全体': all }, start);
   return idx;
 }
 
@@ -185,7 +197,10 @@ export default function SummaryPanel() {
       const cut = ym === meta.latest && meta.partial ? meta.lastDay : null;
       const cur = agg(idx, dept, ym, cut, dt);
       const preAll = agg(idx, dept, prevYearYm(ym), cut, 'all');
-      const ok = preAll.has && preAll.firstDay <= 1;
+      // 前年比の対象：前年同月の1日時点で、その部門のデータがすでに始まっていること
+      // （定休日で1日の売上が0の月も対象にする）
+      const st = idx.__start[dept];
+      const ok = preAll.has && (preAll.firstDay <= 1 || (st && st <= prevYearYm(ym) + '/01'));
       const r = { ym, cut, cur, pre: ok ? agg(idx, dept, prevYearYm(ym), cut, dt) : EMPTY(), ok, partialPre: preAll.has && !ok };
       cache[key] = r;
       return r;
@@ -391,7 +406,7 @@ export default function SummaryPanel() {
       </Card>
 
       <div style={{ fontSize: 11, color: SUB, padding: '0 4px' }}>
-        POS日別データ（税込）より集計。期首は{FY_START_MONTH}月（⚙️設定で変更）。途中の月は前年も同じ日までで比較。前年が月の途中から始まる月は前年比の対象外。
+        POS日別データ（税込）より集計。期首は{FY_START_MONTH}月（⚙️設定で変更）。途中の月は前年も同じ日までで比較。前年にまだその部門のデータがない月は前年比の対象外（定休日で1日が休みの月は対象）。{CFG.SUMMARY_MERGE && CFG.SUMMARY_MERGE['外売店'] ? '外売店（2026年3〜8月は別店舗で計上）は販売部に合算。' : ''}
         {status === 'local' ? '　※GASに接続できなかったため、このブラウザに保存されたデータで表示しています。' : ''}
       </div>
     </div>
