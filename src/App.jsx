@@ -16,20 +16,16 @@ import {
   ReferenceLine
 } from "recharts";
 import Papa from "papaparse";
+import { getGasUrl, setGasUrl, gasGet, gasPost, gasPostFull } from "./lib/gas";
+import KpiPanel from "./components/KpiPanel";
+import * as CFG from "./config";
+import SummaryPanel from "./components/SummaryPanel";
 
 // ════════════════════════════════════
 // Constants
 // ════════════════════════════════════
-var DEPTS = ["全体", "販売部", "外売店", "KURATTORIA150", "さくら亭", "レストラン", "ネット販売"];
-var DC = {
-  "全体": "#1b4332",
-  "販売部": "#c1440e",
-  "外売店": "#386641",
-  "KURATTORIA150": "#b5651d",
-  "さくら亭": "#4a6fa5",
-  "レストラン": "#7b2d8e",
-  "ネット販売": "#2d6e8e"
-};
+var DEPTS = CFG.DEPTS;
+var DC = CFG.DC;
 
 var METRICS = [
   {
@@ -55,75 +51,9 @@ var METRICS = [
 var WD = ["日", "月", "火", "水", "木", "金", "土"];
 var SKIP_LABELS = new Set(["合計", "前月実績", "前月比", "前年実績", "前年比"]);
 
-var DMAP = {
-  // 販売部
-  "センター売店": "販売部", "その他売店": "販売部", "自家製菓子": "販売部",
-  "仕入れ菓子": "販売部", "清酒": "販売部", "焼酎": "販売部",
-  "リキュール": "販売部", "その他酒類": "販売部", "酒蔵限定品": "販売部",
-  "漬物・食品": "販売部", "発酵食品": "販売部", "化粧品": "販売部",
-  "非食品": "販売部", "こけし類": "販売部", "浅間山麓": "販売部",
-  "ぐんま想賓館扱い": "販売部", "浅まるしぇ": "販売部", "自販機": "販売部",
-  "おつまみ": "販売部", "外販": "販売部",
-  // 外売店（KURATERRACE）
-  "外売店": "外売店", "売店（洋食扱い）": "外売店", "売店（調理扱い）": "外売店",
-  // KURATTORIA150
-  "PiZZA(イートイン)": "KURATTORIA150", "Pizza(テイクアウト)": "KURATTORIA150",
-  "パスタ": "KURATTORIA150", "セット": "KURATTORIA150",
-  "ドリンク": "KURATTORIA150", "仕出しPizza": "KURATTORIA150",
-  // ひもかわ さくら亭
-  "さくら亭フリー": "さくら亭", "軽食堂": "さくら亭",
-  "軽食堂テイクアウト": "さくら亭", "軽食堂飲料その他": "さくら亭",
-  // レストラン
-  "大食堂予約": "レストラン", "大食堂飲料": "レストラン",
-  "アラカルト": "レストラン", "町内弁当": "レストラン",
-  // ネット販売
-  "ネット　セット商品": "ネット販売", "ネット　焼酎・リキュール": "ネット販売",
-  "ネット　菓子": "ネット販売", "ネット　酒類": "ネット販売"
-};
+var DMAP = CFG.DMAP;
 
 var PERIOD_COLORS = ["#1b4332", "#c1440e", "#4a6fa5"];
-var GAS_URL_KEY = "as_gas_url";
-var DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbyqxwGq0-cbou7o0Ivef0pau_ETvV8kwqZ9kEfkctTA--6TsYfkqLOK53WPjio7yMfw/exec";
-
-// ════════════════════════════════════
-// GAS API Client
-// ════════════════════════════════════
-function getGasUrl() {
-  try { return localStorage.getItem(GAS_URL_KEY) || DEFAULT_GAS_URL; } catch(e) { return DEFAULT_GAS_URL; }
-}
-
-function setGasUrl(url) {
-  try { localStorage.setItem(GAS_URL_KEY, url); } catch(e) {}
-}
-
-function gasGet(action, params) {
-  var url = getGasUrl();
-  if (!url) return Promise.resolve(null);
-  var qs = "?action=" + encodeURIComponent(action);
-  if (params) {
-    Object.keys(params).forEach(function(k) {
-      qs += "&" + encodeURIComponent(k) + "=" + encodeURIComponent(params[k]);
-    });
-  }
-  return fetch(url + qs)
-    .then(function(r) { return r.json(); })
-    .then(function(d) { return d.ok ? d : null; })
-    .catch(function() { return null; });
-}
-
-function gasPost(body) {
-  var url = getGasUrl();
-  if (!url) return Promise.resolve(null);
-  return fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: JSON.stringify(body),
-    redirect: "follow"
-  })
-    .then(function(r) { return r.json(); })
-    .then(function(d) { return d.ok ? d : null; })
-    .catch(function() { return null; });
-}
 
 
 // ════════════════════════════════════
@@ -193,6 +123,27 @@ function extractPeriodFromFilename(fn) {
 }
 
 function fmtYen(v) { return "\u00a5" + (v || 0).toLocaleString(); }
+
+// \u65e5\u4ed8\u6587\u5b57\u5217\uff08"yyyy/m/d", "yyyy-m-d", "yyyy/mm/dd", ISO\u5148\u982d \u306a\u3069\uff09\u3092
+// \u6bd4\u8f03\u53ef\u80fd\u306a "yyyymmdd" \u3078\u6b63\u898f\u5316\u3059\u308b\u3002\u89e3\u91c8\u3067\u304d\u306a\u3044\u5024\uff08\u7a7a\u6587\u5b57\u30fb\u4e0d\u6b63\u65e5\u4ed8\uff09\u306f
+// null \u3092\u8fd4\u3057\u3001\u547c\u3073\u51fa\u3057\u5074\u306f\u300c\u30d5\u30a3\u30eb\u30bf\u7121\u52b9\uff1d\u5168\u671f\u9593\u6271\u3044\u300d\u306b\u30d5\u30a9\u30fc\u30eb\u30d0\u30c3\u30af\u3059\u308b\u3002
+function normDate(s) {
+  if (s == null) return null;
+  var str = String(s).trim();
+  if (!str) return null;
+  var m = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (!m) return null;
+  var mo = parseInt(m[2], 10), da = parseInt(m[3], 10);
+  if (!(mo >= 1 && mo <= 12) || !(da >= 1 && da <= 31)) return null;
+  return m[1] + String(mo).padStart(2, "0") + String(da).padStart(2, "0");
+}
+
+// \u65e5\u4ed8\u6587\u5b57\u5217\u306e\u6607\u9806\u6bd4\u8f03\uff08\u6b63\u898f\u5316\u3067\u304d\u306a\u3044\u5024\u306f\u6587\u5b57\u5217\u6bd4\u8f03\u306b\u30d5\u30a9\u30fc\u30eb\u30d0\u30c3\u30af\uff09
+function cmpDate(a, b) {
+  var na = normDate(a), nb = normDate(b);
+  if (na && nb) return na < nb ? -1 : na > nb ? 1 : 0;
+  return String(a == null ? "" : a).localeCompare(String(b == null ? "" : b));
+}
 
 
 // ════════════════════════════════════
@@ -313,6 +264,283 @@ function ChartTooltip(props) {
 
 
 // ════════════════════════════════════
+// AI分析レポート Card
+//   type: "daily" | "product"
+//   months: 選択可能な月の配列（"yyyy/MM"、降順）
+// ════════════════════════════════════
+function AIReportCard(props) {
+  var type = props.type;
+  var months = props.months || [];
+
+  // 選択部門は配列で保持。空配列＝「全体」を表す
+  var _dept = useState([]); var selDepts = _dept[0]; var setSelDepts = _dept[1];
+  var _month = useState(""); var selMonth = _month[0]; var setSelMonth = _month[1];
+  var _loading = useState(false); var loading = _loading[0]; var setLoading = _loading[1];
+  var _report = useState(null); var report = _report[0]; var setReport = _report[1];
+  var _err = useState(""); var err = _err[0]; var setErr = _err[1];
+  var _cached = useState(false); var cached = _cached[0]; var setCached = _cached[1];
+  var _gen = useState(""); var generatedAt = _gen[0]; var setGeneratedAt = _gen[1];
+
+  // GASに送るdept文字列（単一=そのまま / 複数="販売部+さくら亭" / 空=全体）と表示ラベル
+  var deptParam = selDepts.length === 0 ? "全体" : selDepts.join("+");
+  var deptLabel = selDepts.length === 0 ? "全体" : selDepts.join("＋");
+
+  // 選択中の月が候補に無くなったら先頭に合わせる
+  useEffect(function() {
+    if (months.length === 0) { if (selMonth) setSelMonth(""); return; }
+    if (!selMonth || months.indexOf(selMonth) === -1) setSelMonth(months[0]);
+  }, [months]);
+
+  function run(force) {
+    if (!selMonth) { setErr("対象月を選択してください"); return; }
+    setLoading(true); setErr("");
+    if (force) { setReport(null); }
+    var kpi = null;
+    try { kpi = props.buildSnapshot ? props.buildSnapshot(selMonth, selDepts) : null; } catch (e) { kpi = null; }
+    gasPostFull({ action: "getAnalysisReport", type: type, dept: deptParam, month: selMonth, force: !!force, kpi: kpi })
+      .then(function(res) {
+        setLoading(false);
+        if (!res || !res.ok) {
+          setErr((res && res.error) ? res.error : "レポートの取得に失敗しました");
+          return;
+        }
+        setReport(res.report || null);
+        setCached(res.cached === true);
+        setGeneratedAt(res.generatedAt || "");
+      });
+  }
+
+  var accent = type === "daily" ? "#1b4332" : "#b5651d";
+
+  return (
+    <Card>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 15, color: "#333", fontWeight: 600 }}>{"📊 AI分析レポート"}</h3>
+        <span style={{ fontSize: 10, color: "#fff", background: accent, borderRadius: 6, padding: "2px 8px", fontWeight: 600 }}>
+          {type === "daily" ? "日別" : "商品別"}
+        </span>
+      </div>
+      <div style={{ fontSize: 12, color: "#999", marginBottom: 14, lineHeight: 1.6 }}>
+        {"当月と前年同月を踏まえてAIが分析します。確定済みの月は2回目以降キャッシュ表示（追加コストなし）。"}
+      </div>
+
+      {/* コントロール */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginBottom: 8 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {DEPTS.map(function(d) {
+            var isAll = d === "全体";
+            var active = isAll ? selDepts.length === 0 : selDepts.indexOf(d) !== -1;
+            return <button key={d} onClick={function() {
+              if (isAll) { setSelDepts([]); return; }   // 全体：他の選択を全解除
+              setSelDepts(function(prev) {
+                return prev.indexOf(d) !== -1
+                  ? prev.filter(function(x) { return x !== d; })
+                  : prev.concat([d]);
+              });
+            }} style={chipStyle(active, DC[d])}>{d}</button>;
+          })}
+        </div>
+        <div style={{ width: 1, height: 26, background: "#e8e6e0" }} />
+        <select value={selMonth} onChange={function(e) { setSelMonth(e.target.value); }}
+          style={{ padding: "8px 12px", border: "1px solid #d4d0c8", borderRadius: 8, fontSize: 13, background: "#fff" }}>
+          {months.length === 0 && <option value="">{"（データ未取込）"}</option>}
+          {months.map(function(m) { return <option key={m} value={m}>{m}</option>; })}
+        </select>
+        <button onClick={function() { run(false); }} disabled={loading || !selMonth}
+          style={{
+            padding: "9px 22px", background: loading || !selMonth ? "#bbb" : accent, color: "#fff",
+            border: "none", borderRadius: 10, fontSize: 13, fontWeight: 600,
+            cursor: loading || !selMonth ? "default" : "pointer"
+          }}>{"レポート表示"}</button>
+        {report && !loading && (
+          <button onClick={function() { run(true); }}
+            style={{
+              padding: "9px 16px", background: "#fff", color: accent,
+              border: "1px solid " + accent, borderRadius: 10, fontSize: 13, fontWeight: 500, cursor: "pointer"
+            }}>{"🔄 再生成"}</button>
+        )}
+      </div>
+
+      {/* ローディング */}
+      {loading && (
+        <div style={{ marginTop: 16, padding: "28px 20px", textAlign: "center", background: "#fafaf8", borderRadius: 12, border: "1px solid #eee" }}>
+          <div style={{ fontSize: 15, color: "#666", fontWeight: 500 }}>{"🤖 AI分析中...（初回は30秒ほどかかります）"}</div>
+          <div style={{ fontSize: 12, color: "#aaa", marginTop: 6 }}>{selMonth + "「" + deptLabel + "」を分析しています"}</div>
+        </div>
+      )}
+
+      {/* エラー */}
+      {err && !loading && (
+        <div style={{ marginTop: 14, padding: "14px 18px", borderRadius: 10, background: "#fdf0ec", border: "1px solid #f0c4b4", color: "#c1440e", fontSize: 13, lineHeight: 1.6 }}>
+          {"⚠️ " + err}
+        </div>
+      )}
+
+      {/* レポート */}
+      {report && !loading && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+            <span style={{
+              fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 10px",
+              background: cached ? "#eef2f7" : "#eaf3ee",
+              color: cached ? "#4a6fa5" : "#1b4332"
+            }}>
+              {cached
+                ? ("💾 キャッシュから表示" + (generatedAt ? "（生成: " + generatedAt + "）" : ""))
+                : ("✨ 新規生成" + (generatedAt ? "（" + generatedAt + "）" : ""))}
+            </span>
+            <span style={{ fontSize: 11, color: "#aaa" }}>{deptLabel + "　" + selMonth + " 分析"}</span>
+          </div>
+
+          {report.summary && (
+            <div style={{ marginBottom: 16, padding: "16px 18px", borderRadius: 12, background: "rgba(27,67,50,.04)", border: "1px solid rgba(27,67,50,.1)" }}>
+              <div style={{ fontSize: 12, color: accent, fontWeight: 700, marginBottom: 6, letterSpacing: ".04em" }}>{"サマリー"}</div>
+              <div style={{ fontSize: 14, color: "#333", lineHeight: 1.75 }}>{report.summary}</div>
+            </div>
+          )}
+
+          {report.yoy && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, color: "#888", fontWeight: 700, marginBottom: 6, letterSpacing: ".04em" }}>{"📈 前年比"}</div>
+              <div style={{ fontSize: 13.5, color: "#444", lineHeight: 1.75, paddingLeft: 2 }}>{report.yoy}</div>
+            </div>
+          )}
+
+          {aiSection_("✅ ファクト（データが示す事実）", report.facts, "#1b4332")}
+          {aiSection_("💡 仮説（変動の要因）", report.hypotheses, "#b5651d")}
+          {aiSection_("📋 今後のタスク案", report.tasks, "#4a6fa5")}
+
+          <div style={{ marginTop: 14, fontSize: 10, color: "#ccc" }}>
+            {"※ AIによる分析です。数値の裏付けを確認のうえ経営判断にご活用ください。"}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// レポートの箇条書きセクション
+function aiSection_(title, items, color) {
+  if (!items || !Array.isArray(items) || items.length === 0) return null;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, color: "#888", fontWeight: 700, marginBottom: 8, letterSpacing: ".04em" }}>{title}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {items.map(function(it, i) {
+          return (
+            <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: color, marginTop: 7, flexShrink: 0 }} />
+              <div style={{ fontSize: 13.5, color: "#444", lineHeight: 1.7 }}>{String(it)}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
+
+// ════════════════════════════════════
+// AI分析レポートに渡すデータ（GAS側はこの値だけを見て分析する）
+// ════════════════════════════════════
+function ymdOf_(s) {
+  var m = String(s || "").match(/(\d{4})\D(\d{1,2})\D(\d{1,2})/);
+  return m ? m[1] + "/" + String(m[2]).padStart(2, "0") + "/" + String(m[3]).padStart(2, "0") : null;
+}
+function prevYm_(ym) { return (parseInt(ym.slice(0, 4), 10) - 1) + ym.slice(4); }
+
+function dailyMonth_(data, ym, depts) {
+  var days = {}; var byDept = {};
+  depts.forEach(function(d) {
+    var src = data[d] || {}; var t = { 売上: 0, 客数: 0, 日数: 0 };
+    Object.keys(src).forEach(function(k) {
+      var r = src[k]; var dt = ymdOf_((r && r.date) || k);
+      if (!dt || dt.slice(0, 7) !== ym) return;
+      if (!days[dt]) days[dt] = { 日付: dt, 曜日: r.dow || WD[new Date(dt).getDay()], 売上: 0, 客数: 0 };
+      days[dt].売上 += +r.sales || 0; days[dt].客数 += +r.customers || 0;
+      t.売上 += +r.sales || 0; t.客数 += +r.customers || 0; t.日数 += 1;
+    });
+    if (t.日数) { t.客単価 = t.客数 ? Math.round(t.売上 / t.客数) : 0; byDept[d] = t; }
+  });
+  var list = Object.keys(days).sort().map(function(k) {
+    var x = days[k]; x.売上 = Math.round(x.売上); x.客単価 = x.客数 ? Math.round(x.売上 / x.客数) : 0; return x;
+  });
+  var tot = list.reduce(function(a, x) { a.売上 += x.売上; a.客数 += x.客数; return a; }, { 売上: 0, 客数: 0 });
+  tot.営業日数 = list.length; tot.客単価 = tot.客数 ? Math.round(tot.売上 / tot.客数) : 0;
+  var we = list.filter(function(x) { return x.曜日 === "土" || x.曜日 === "日"; });
+  var wd = list.filter(function(x) { return !(x.曜日 === "土" || x.曜日 === "日"); });
+  var avg = function(arr) {
+    if (!arr.length) return null;
+    var s = arr.reduce(function(a, x) { return a + x.売上; }, 0), c = arr.reduce(function(a, x) { return a + x.客数; }, 0);
+    return { 日数: arr.length, 一日平均売上: Math.round(s / arr.length), 一日平均客数: Math.round(c / arr.length) };
+  };
+  return { 合計: tot, 部門別: byDept, 平日: avg(wd), 土日: avg(we), 日別: list };
+}
+
+function buildDailySnapshot(data, ym, selDepts) {
+  var depts = selDepts && selDepts.length ? selDepts : CFG.SUB_DEPTS;
+  var cur = dailyMonth_(data, ym, depts);
+  var pre = dailyMonth_(data, prevYm_(ym), depts);
+  return {
+    施設: CFG.FACILITY_NAME, 対象月: ym, 部門: depts.join("＋"),
+    注記: "POS日別データ（税込）。前年は前年同月の実績。前年の日別が空なら前年データなし。",
+    当月: cur, 前年同月: pre.合計.営業日数 ? pre : null
+  };
+}
+
+function productPeriodOf_(periods, ym) {
+  var key = ym.replace("/", "");
+  var ks = Object.keys(periods || {}).filter(function(k) { return k.slice(0, 6) === key; }).sort();
+  return ks.length ? periods[ks[0]] : null;
+}
+
+function buildProductSnapshot(periods, ym, selDepts) {
+  var stores = selDepts && selDepts.length ? selDepts : null;
+  var pick = function(p) {
+    if (!p) return [];
+    return p.rows.filter(function(r) { return !stores || stores.indexOf(r.store) !== -1; });
+  };
+  var cur = pick(productPeriodOf_(periods, ym));
+  var preP = productPeriodOf_(periods, prevYm_(ym));
+  var pre = pick(preP);
+  var preMap = {}; pre.forEach(function(r) { preMap[r.code] = r; });
+  var curMap = {}; cur.forEach(function(r) { curMap[r.code] = r; });
+  var sum = function(arr, k) { return Math.round(arr.reduce(function(a, r) { return a + (r[k] || 0); }, 0)); };
+  var byCat = function(arr) {
+    var o = {};
+    arr.forEach(function(r) {
+      var c = r.category || "不明";
+      if (!o[c]) o[c] = { 部門: r.store, 売上: 0, 粗利: 0, 数量: 0 };
+      o[c].売上 += r.sales; o[c].粗利 += r.profit; o[c].数量 += r.quantity;
+    });
+    return Object.keys(o).map(function(c) {
+      return { 分類: c, 部門: o[c].部門, 売上: Math.round(o[c].売上), 粗利: Math.round(o[c].粗利), 数量: o[c].数量 };
+    }).sort(function(a, b) { return b.売上 - a.売上; });
+  };
+  var top = cur.slice().sort(function(a, b) { return b.sales - a.sales; }).slice(0, 30).map(function(r) {
+    var p = preMap[r.code];
+    return {
+      商品: r.name, 分類: r.category, 部門: r.store, 売上: Math.round(r.sales), 数量: r.quantity,
+      粗利率: r.profitRate, 前年売上: p ? Math.round(p.sales) : null, 前年数量: p ? p.quantity : null
+    };
+  });
+  var gone = pre.filter(function(r) { return !curMap[r.code]; }).sort(function(a, b) { return b.sales - a.sales; })
+    .slice(0, 10).map(function(r) { return { 商品: r.name, 分類: r.category, 前年売上: Math.round(r.sales) }; });
+  var fresh = cur.filter(function(r) { return preP && !preMap[r.code]; }).sort(function(a, b) { return b.sales - a.sales; })
+    .slice(0, 10).map(function(r) { return { 商品: r.name, 分類: r.category, 売上: Math.round(r.sales) }; });
+  return {
+    施設: CFG.FACILITY_NAME, 対象月: ym, 部門: stores ? stores.join("＋") : "全体",
+    注記: "POS商品別データ。前年は前年同月の期間。前年がnullなら前年データなし。",
+    当月合計: { 売上: sum(cur, "sales"), 粗利: sum(cur, "profit"), 数量: sum(cur, "quantity"), 商品数: cur.length },
+    前年同月合計: preP ? { 売上: sum(pre, "sales"), 粗利: sum(pre, "profit"), 数量: sum(pre, "quantity"), 商品数: pre.length } : null,
+    分類別: byCat(cur).slice(0, 25),
+    前年分類別: preP ? byCat(pre).slice(0, 25) : null,
+    売上上位30: top, 新商品上位: fresh, 消えた商品上位: gone
+  };
+}
+
+// ════════════════════════════════════
 // Settings Panel
 // ════════════════════════════════════
 function SettingsPanel(props) {
@@ -376,6 +604,18 @@ function SettingsPanel(props) {
           {testResult}
         </div>
       )}
+      <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid #eee" }}>
+        <div style={{ fontSize: 13, color: "#333", fontWeight: 600, marginBottom: 6 }}>{"📅 期首月"}</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={props.fyStart} onChange={function(e) { props.onFyChange(parseInt(e.target.value, 10)); }}
+            style={{ padding: "8px 12px", border: "1px solid #d4d0c8", borderRadius: 8, fontSize: 13, background: "#fff" }}>
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(function(m) { return <option key={m} value={m}>{m + "月"}</option>; })}
+          </select>
+          <span style={{ fontSize: 12, color: "#888", lineHeight: 1.6 }}>
+            {"月次サマリの期累計と、経営指標（損益計算書）の期の区切りに使います。経営指標は変更後に損益計算書を取り込み直すと反映されます。"}
+          </span>
+        </div>
+      </div>
     </Card>
   );
 }
@@ -389,7 +629,7 @@ function DailyDashboard() {
   var _dept = useState("全体"); var dept = _dept[0]; var setDept = _dept[1];
   var _met = useState("sales"); var metric = _met[0]; var setMetric = _met[1];
   var _rng = useState({ s: "", e: "" }); var range = _rng[0]; var setRange = _rng[1];
-  var _imp = useState("販売部"); var impDept = _imp[0]; var setImpDept = _imp[1];
+  var _imp = useState(CFG.SUB_DEPTS[0]); var impDept = _imp[0]; var setImpDept = _imp[1];
   var _cmp = useState(null); var compareMode = _cmp[0]; var setCompareMode = _cmp[1];
   var _tbl = useState(true); var showTable = _tbl[0]; var setShowTable = _tbl[1];
   var _sync = useState("idle"); var syncStatus = _sync[0]; var setSyncStatus = _sync[1];
@@ -408,7 +648,7 @@ function DailyDashboard() {
       } else {
         // fallback to localStorage
         try {
-          var d = localStorage.getItem("as_daily3");
+          var d = localStorage.getItem(CFG.KEY_PREFIX + "daily3");
           if (d) setData(JSON.parse(d));
         } catch(e) {}
         setSyncStatus(getGasUrl() ? "error" : "idle");
@@ -434,7 +674,7 @@ function DailyDashboard() {
       var next = JSON.parse(JSON.stringify(prev));
       if (!next[impDeptName]) next[impDeptName] = {};
       impRows.forEach(function(r) { next[impDeptName][r.date] = r; });
-      try { localStorage.setItem("as_daily3", JSON.stringify(next)); } catch(e) {}
+      try { localStorage.setItem(CFG.KEY_PREFIX + "daily3", JSON.stringify(next)); } catch(e) {}
       setSyncStatus("syncing");
       gasPost({ action: "saveDailyData", dept: impDeptName, rows: impRows }).then(function(res) {
         setSyncStatus(res ? "synced" : (getGasUrl() ? "error" : "idle"));
@@ -454,7 +694,7 @@ function DailyDashboard() {
         if (next[deptName][dt].m === month) delete next[deptName][dt];
       });
       if (Object.keys(next[deptName]).length === 0) delete next[deptName];
-      try { localStorage.setItem("as_daily3", JSON.stringify(next)); } catch(e) {}
+      try { localStorage.setItem(CFG.KEY_PREFIX + "daily3", JSON.stringify(next)); } catch(e) {}
       return next;
     });
   }, []);
@@ -462,7 +702,7 @@ function DailyDashboard() {
   // === Computed values ===
   var allData = useMemo(function() {
     var result = {};
-    ["販売部", "外売店", "KURATTORIA150", "さくら亭", "レストラン", "ネット販売"].forEach(function(d) {
+    CFG.SUB_DEPTS.forEach(function(d) {
       if (!data[d]) return;
       Object.keys(data[d]).forEach(function(dt) {
         var row = data[d][dt];
@@ -480,10 +720,24 @@ function DailyDashboard() {
 
   var current = useMemo(function() {
     var src = dept === "全体" ? allData : (data[dept] || {});
-    var arr = Object.values(src).sort(function(a, b) { return a.date.localeCompare(b.date); });
-    if (range.s) arr = arr.filter(function(r) { return r.date >= range.s; });
-    if (range.e) arr = arr.filter(function(r) { return r.date <= range.e; });
-    return arr;
+    // 有効な date を持つ行のみを日付昇順で並べる
+    var base = Object.values(src)
+      .filter(function(r) { return r && r.date != null && String(r.date).trim() !== ""; })
+      .sort(function(a, b) { return cmpDate(a.date, b.date); });
+    try {
+      // 不正な日付（空文字・パース失敗）は無視して全期間扱いにフォールバック
+      var lo = normDate(range && range.s);
+      var hi = normDate(range && range.e);
+      // 開始 > 終了 の逆転入力（スピナー操作など）は入れ替えて許容する
+      if (lo && hi && lo > hi) { var _t = lo; lo = hi; hi = _t; }
+      var arr = base;
+      if (lo) arr = arr.filter(function(r) { var d = normDate(r.date); return d == null || d >= lo; });
+      if (hi) arr = arr.filter(function(r) { var d = normDate(r.date); return d == null || d <= hi; });
+      return arr;
+    } catch (e) {
+      console.error("[current] 日付フィルタ処理でエラー。全期間表示にフォールバックします:", e);
+      return base;
+    }
   }, [dept, data, allData, range]);
 
   var mi = METRICS.find(function(m) { return m.key === metric; });
@@ -493,6 +747,13 @@ function DailyDashboard() {
     var src = dept === "全体" ? allData : (data[dept] || {});
     return current.map(function(r) {
       var d = new Date(r.date);
+      // 日付が不正なら前年比較はスキップ（lastYear=null）してクラッシュを避ける
+      if (isNaN(d.getTime())) {
+        return {
+          label: String(r.date == null ? "" : r.date).slice(5), fullDate: r.date, dow: r.dow,
+          thisYear: r[metric], lastYear: null, lyDate: "", ratio: null
+        };
+      }
       var lyDate;
       if (compareMode === "date") {
         var ly = new Date(d); ly.setFullYear(ly.getFullYear() - 1);
@@ -504,7 +765,7 @@ function DailyDashboard() {
       var lyRow = src[lyDate];
       var tv = r[metric]; var lv = lyRow ? lyRow[metric] : null;
       return {
-        label: r.date.slice(5), fullDate: r.date, dow: r.dow,
+        label: String(r.date == null ? "" : r.date).slice(5), fullDate: r.date, dow: r.dow,
         thisYear: tv, lastYear: lv, lyDate: lyDate,
         ratio: (lv && lv > 0) ? tv / lv : null
       };
@@ -529,6 +790,19 @@ function DailyDashboard() {
 
   var cnt = Object.keys(data).reduce(function(s, d) { return s + Object.keys(data[d]).length; }, 0);
 
+  // AI分析レポート用: 取込済みデータの月一覧（"yyyy/MM"、降順）
+  var aiMonths = useMemo(function() {
+    var set = {};
+    Object.keys(data).forEach(function(dn) {
+      Object.values(data[dn]).forEach(function(r) {
+        var m = r.m;
+        if (!m || String(m).length > 7) m = r.date ? r.date.slice(0, 7) : null;
+        if (m) set[m] = true;
+      });
+    });
+    return Object.keys(set).sort(function(a, b) { return b.localeCompare(a); });
+  }, [data]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <Card>
@@ -538,7 +812,7 @@ function DailyDashboard() {
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
           <span style={{ fontSize: 13, color: "#666" }}>{"取込先："}</span>
-          {["販売部", "外売店", "KURATTORIA150", "さくら亭", "レストラン", "ネット販売"].map(function(d) {
+          {CFG.SUB_DEPTS.map(function(d) {
             return <button key={d} onClick={function() { setImpDept(d); }} style={chipStyle(impDept === d, DC[d])}>{d}</button>;
           })}
         </div>
@@ -570,7 +844,7 @@ function DailyDashboard() {
             {showDataMgmt && (
               <div style={{ marginTop: 10, padding: 14, borderRadius: 10, background: "#fafaf8", border: "1px solid #eee" }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: "#333", marginBottom: 10 }}>{"部門×月別データ管理"}</div>
-                {["販売部", "外売店", "KURATTORIA150", "さくら亭", "レストラン", "ネット販売"].map(function(dName) {
+                {CFG.SUB_DEPTS.map(function(dName) {
                   if (!data[dName] || Object.keys(data[dName]).length === 0) return null;
                   var months = {};
                   Object.values(data[dName]).forEach(function(r) {
@@ -601,7 +875,7 @@ function DailyDashboard() {
                   <button onClick={function() {
                     if (window.confirm("全部門・全月のデータを削除しますか？")) {
                       setData({});
-                      try { localStorage.removeItem("as_daily3"); } catch(e) {}
+                      try { localStorage.removeItem(CFG.KEY_PREFIX + "daily3"); } catch(e) {}
                     }
                   }}
                     style={{ fontSize: 11, color: "#c1440e", background: "none", border: "1px solid #c1440e", borderRadius: 4, padding: "2px 8px", cursor: "pointer" }}>{"⚠️ 全データ削除"}</button>
@@ -612,8 +886,7 @@ function DailyDashboard() {
         )}
       </Card>
 
-      {current.length > 0 && (
-        <>
+      <>
           <Card style={{ padding: "16px 24px" }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
               <div style={{ display: "flex", gap: 6 }}>
@@ -629,12 +902,12 @@ function DailyDashboard() {
               </div>
               <div style={{ width: 1, height: 28, background: "#e8e6e0" }} />
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <input type="date" value={range.s.replace(/\//g, "-")}
-                  onChange={function(e) { setRange(function(p) { return { s: e.target.value.replace(/-/g, "/"), e: p.e }; }); }}
+                <input type="date" value={String(range.s || "").replace(/\//g, "-")}
+                  onChange={function(e) { var v = (e.target.value || "").replace(/-/g, "/"); setRange(function(p) { return { s: v, e: p.e }; }); }}
                   style={{ padding: "5px 8px", border: "1px solid #d4d0c8", borderRadius: 8, fontSize: 13 }} />
                 <span style={{ color: "#bbb" }}>{"\u301c"}</span>
-                <input type="date" value={range.e.replace(/\//g, "-")}
-                  onChange={function(e) { setRange(function(p) { return { s: p.s, e: e.target.value.replace(/-/g, "/") }; }); }}
+                <input type="date" value={String(range.e || "").replace(/\//g, "-")}
+                  onChange={function(e) { var v = (e.target.value || "").replace(/-/g, "/"); setRange(function(p) { return { s: p.s, e: v }; }); }}
                   style={{ padding: "5px 8px", border: "1px solid #d4d0c8", borderRadius: 8, fontSize: 13 }} />
                 {(range.s || range.e) && (
                   <button onClick={function() { setRange({ s: "", e: "" }); }}
@@ -644,6 +917,24 @@ function DailyDashboard() {
             </div>
           </Card>
 
+          {current.length === 0 ? (
+            <Card>
+              <div style={{ padding: "40px 20px", textAlign: "center", color: "#999" }}>
+                <div style={{ fontSize: 32, marginBottom: 10 }}>{"📭"}</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#666", marginBottom: 6 }}>{"該当期間にデータがありません"}</div>
+                <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+                  {(range.s || range.e)
+                    ? "選択中の期間・部門に一致する売上データがありません。期間を広げるか、下のボタンでフィルタを解除してください。"
+                    : "選択中の部門に売上データがありません。上部の部門ボタンで別の部門を選択してください。"}
+                </div>
+                {(range.s || range.e) && (
+                  <button onClick={function() { setRange({ s: "", e: "" }); }}
+                    style={{ marginTop: 14, padding: "8px 20px", background: "#1b4332", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{"✕ 期間フィルタを解除"}</button>
+                )}
+              </div>
+            </Card>
+          ) : (
+          <>
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
             <KPICard label="期間売上合計" value={fmtYen(kpis.s)} sub={kpis.d + "日間"} color="#1b4332" icon="💰" />
             <KPICard label="期間客数合計" value={kpis.c.toLocaleString() + "人"} sub={"日平均 " + Math.round(kpis.c / Math.max(kpis.d, 1)).toLocaleString() + "人"} color="#386641" icon="👥" />
@@ -658,7 +949,7 @@ function DailyDashboard() {
             <ResponsiveContainer width="100%" height={300}>
               <ComposedChart data={current} margin={{ left: 10, right: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
-                <XAxis dataKey="date" tickFormatter={function(v) { return v.slice(5); }} fontSize={11} tick={{ fill: "#888" }} />
+                <XAxis dataKey="date" tickFormatter={function(v) { return typeof v === "string" ? v.slice(5) : (v == null ? "" : String(v)); }} fontSize={11} tick={{ fill: "#888" }} />
                 <YAxis tickFormatter={mi.yFmt} fontSize={11} tick={{ fill: "#888" }} />
                 <Tooltip content={function(p) { return <ChartTooltip active={p.active} payload={p.payload} label={p.label} mi={mi} />; }} />
                 <defs>
@@ -680,16 +971,21 @@ function DailyDashboard() {
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart margin={{ left: 10, right: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
-                  <XAxis dataKey="date" tickFormatter={function(v) { return v.slice(5); }} fontSize={11} allowDuplicatedCategory={false} tick={{ fill: "#888" }} />
+                  <XAxis dataKey="date" tickFormatter={function(v) { return typeof v === "string" ? v.slice(5) : (v == null ? "" : String(v)); }} fontSize={11} allowDuplicatedCategory={false} tick={{ fill: "#888" }} />
                   <YAxis tickFormatter={mi.yFmt} fontSize={11} tick={{ fill: "#888" }} />
                   <Tooltip content={function(p) { return <ChartTooltip active={p.active} payload={p.payload} label={p.label} mi={mi} />; }} />
                   <Legend />
-                  {["販売部", "外売店", "KURATTORIA150", "さくら亭", "レストラン", "ネット販売"].map(function(d) {
-                    var dd = data[d] ? Object.values(data[d]).sort(function(a, b) { return a.date.localeCompare(b.date); }).filter(function(r) {
-                      if (range.s && r.date < range.s) return false;
-                      if (range.e && r.date > range.e) return false;
-                      return true;
-                    }) : [];
+                  {CFG.SUB_DEPTS.map(function(d) {
+                    var _lo = normDate(range && range.s), _hi = normDate(range && range.e);
+                    var dd = data[d] ? Object.values(data[d])
+                      .filter(function(r) { return r && r.date != null && String(r.date).trim() !== ""; })
+                      .sort(function(a, b) { return cmpDate(a.date, b.date); })
+                      .filter(function(r) {
+                        var nd = normDate(r.date);
+                        if (_lo && nd != null && nd < _lo) return false;
+                        if (_hi && nd != null && nd > _hi) return false;
+                        return true;
+                      }) : [];
                     if (dd.length === 0) return null;
                     return <Line key={d} data={dd} dataKey={metric} name={d} stroke={DC[d]} strokeWidth={2} dot={false} type="monotone" />;
                   })}
@@ -803,7 +1099,18 @@ function DailyDashboard() {
                       <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
                       <XAxis dataKey="label" fontSize={10} tick={{ fill: "#888" }} interval={Math.max(0, Math.floor(yoyData.length / 20))} />
                       <YAxis tickFormatter={function(v) { return (v * 100).toFixed(0) + "%"; }} fontSize={11} tick={{ fill: "#888" }} />
-                      <Tooltip formatter={function(v) { return [(v * 100).toFixed(1) + "%", "前年比"]; }} />
+                      <Tooltip content={function(tp) {
+                        if (!tp.active || !tp.payload || tp.payload.length === 0) return null;
+                        var item = tp.payload[0].payload;
+                        return (
+                          <div style={{ background: "#fff", border: "1px solid #e8e6e0", borderRadius: 10, padding: "12px 16px", boxShadow: "0 4px 20px rgba(0,0,0,.08)", fontSize: 13 }}>
+                            <div style={{ fontWeight: 600, marginBottom: 6 }}>{item.label + "（" + item.dow + "）"}</div>
+                            <div style={{ fontWeight: 600, color: item.ratio != null && item.ratio >= 1 ? "#1b4332" : "#c1440e" }}>
+                              {"前年比 " + (item.ratio != null ? (item.ratio * 100).toFixed(1) + "%" : "—")}
+                            </div>
+                          </div>
+                        );
+                      }} />
                       <ReferenceLine y={1} stroke="#999" strokeDasharray="4 4" />
                       <Bar dataKey="ratio" name="前年比" maxBarSize={18} radius={[2, 2, 0, 0]}>
                         {yoyData.filter(function(r) { return r.ratio != null; }).map(function(r, i) {
@@ -885,8 +1192,11 @@ function DailyDashboard() {
               </div>
             )}
           </Card>
+          </>
+          )}
         </>
-      )}
+
+      {aiMonths.length > 0 && <AIReportCard type="daily" months={aiMonths} buildSnapshot={function(m, ds) { return buildDailySnapshot(data, m, ds); }} />}
     </div>
   );
 }
@@ -920,7 +1230,7 @@ function ProductDashboard() {
         setSyncStatus("synced");
       } else {
         try {
-          var d = localStorage.getItem("as_prod4");
+          var d = localStorage.getItem(CFG.KEY_PREFIX + "prod4");
           if (d) setPeriods(JSON.parse(d));
         } catch(e) {}
         setSyncStatus(getGasUrl() ? "error" : "idle");
@@ -932,6 +1242,18 @@ function ProductDashboard() {
   var periodKeys = useMemo(function() {
     return Object.keys(periods).sort(function(a, b) { return b.localeCompare(a); });
   }, [periods]);
+
+  // AI分析レポート用: 取込済み期間の月一覧（"yyyy/MM"、降順）
+  var aiMonths = useMemo(function() {
+    var set = {};
+    periodKeys.forEach(function(k) {
+      var m = String(k).match(/^(\d{4})(\d{2})\d{2}-/);
+      if (m) { set[m[1] + "/" + m[2]] = true; return; }
+      var p = periods[k];
+      if (p && p.shortLabel && /^\d{4}\/\d{2}/.test(p.shortLabel)) set[p.shortLabel.slice(0, 7)] = true;
+    });
+    return Object.keys(set).sort(function(a, b) { return b.localeCompare(a); });
+  }, [periodKeys, periods]);
 
   useEffect(function() {
     if (periodKeys.length >= 1 && !basePeriod) setBasePeriod(periodKeys[0]);
@@ -949,7 +1271,7 @@ function ProductDashboard() {
       var next = JSON.parse(JSON.stringify(prev));
       next[info.key] = { label: info.label, shortLabel: info.shortLabel, rows: rows };
       // Save locally
-      try { localStorage.setItem("as_prod4", JSON.stringify(next)); } catch(e) {}
+      try { localStorage.setItem(CFG.KEY_PREFIX + "prod4", JSON.stringify(next)); } catch(e) {}
       return next;
     });
 
@@ -969,7 +1291,7 @@ function ProductDashboard() {
     setPeriods(function(prev) {
       var next = JSON.parse(JSON.stringify(prev));
       delete next[key];
-      try { localStorage.setItem("as_prod4", JSON.stringify(next)); } catch(e) {}
+      try { localStorage.setItem(CFG.KEY_PREFIX + "prod4", JSON.stringify(next)); } catch(e) {}
       return next;
     });
     if (basePeriod === key) setBasePeriod("");
@@ -1106,7 +1428,7 @@ function ProductDashboard() {
                   if (window.confirm("全期間のデータを削除しますか？")) {
                     setPeriods({});
                     setBasePeriod(""); setCmpPeriod1(""); setCmpPeriod2("");
-                    try { localStorage.removeItem("as_prod4"); } catch(e) {}
+                    try { localStorage.removeItem(CFG.KEY_PREFIX + "prod4"); } catch(e) {}
                   }
                 }}
                   style={{ marginTop: 8, fontSize: 11, color: "#c1440e", background: "none", border: "1px solid #c1440e", borderRadius: 4, padding: "3px 10px", cursor: "pointer" }}>{"⚠️ 全削除"}</button>
@@ -1409,6 +1731,8 @@ function ProductDashboard() {
           </Card>
         </>
       )}
+
+      {aiMonths.length > 0 && <AIReportCard type="product" months={aiMonths} buildSnapshot={function(m, ds) { return buildProductSnapshot(periods, m, ds); }} />}
     </div>
   );
 }
@@ -1418,9 +1742,10 @@ function ProductDashboard() {
 // App
 // ════════════════════════════════════
 export default function App() {
-  var _t = useState("daily"); var tab = _t[0]; var setTab = _t[1];
+  var _t = useState("summary"); var tab = _t[0]; var setTab = _t[1];
   var _s = useState(false); var showSettings = _s[0]; var setShowSettings = _s[1];
   var _url = useState(getGasUrl()); var gasUrl = _url[0]; var setGasUrlState = _url[1];
+  var _fy = useState(CFG.getFyStartMonth()); var fyStart = _fy[0]; var setFyStart = _fy[1];
 
   var tabStyle = function(active) {
     return {
@@ -1429,7 +1754,7 @@ export default function App() {
       background: active ? "rgba(27,67,50,.06)" : "transparent",
       color: active ? "#1b4332" : "#666",
       fontWeight: active ? 700 : 500,
-      fontSize: 14, cursor: "pointer", transition: "all .2s", letterSpacing: ".02em"
+      fontSize: 14, cursor: "pointer", transition: "all .2s", letterSpacing: ".02em", whiteSpace: "nowrap"
     };
   };
 
@@ -1441,15 +1766,17 @@ export default function App() {
         display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 26 }}>{"🏔️"}</span>
+          <span style={{ fontSize: 26 }}>{CFG.FACILITY_ICON}</span>
           <div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: "#1b4332", letterSpacing: ".04em" }}>{"浅間酒造観光センター"}</div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#1b4332", letterSpacing: ".04em" }}>{CFG.FACILITY_NAME}</div>
             <div style={{ fontSize: 10, color: "#999", letterSpacing: ".08em" }}>{"売上管理ダッシュボード"}</div>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 0, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 0, alignItems: "center", overflowX: "auto", maxWidth: "100%" }}>
+          <button onClick={function() { setTab("summary"); }} style={tabStyle(tab === "summary")}>{"🗓️ 月次サマリ"}</button>
           <button onClick={function() { setTab("daily"); }} style={tabStyle(tab === "daily")}>{"📈 日別売上推移"}</button>
           <button onClick={function() { setTab("product"); }} style={tabStyle(tab === "product")}>{"📦 商品別分析"}</button>
+          <button onClick={function() { setTab("kpi"); }} style={tabStyle(tab === "kpi")}>{"💹 経営指標"}</button>
           <div style={{ width: 1, height: 28, background: "#e8e6e0", margin: "0 8px" }} />
           <button onClick={function() { setShowSettings(!showSettings); }}
             style={{
@@ -1466,10 +1793,11 @@ export default function App() {
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "22px 28px" }}>
         {showSettings && (
           <div style={{ marginBottom: 20 }}>
-            <SettingsPanel onUrlChange={function(u) { setGasUrlState(u); }} />
+            <SettingsPanel onUrlChange={function(u) { setGasUrlState(u); }}
+              fyStart={fyStart} onFyChange={function(m) { CFG.setFyStartMonth(m); setFyStart(m); }} />
           </div>
         )}
-        {tab === "daily" ? <DailyDashboard /> : <ProductDashboard />}
+        {tab === "summary" ? <SummaryPanel key={"s" + fyStart} /> : tab === "daily" ? <DailyDashboard /> : tab === "product" ? <ProductDashboard /> : <KpiPanel key={"k" + fyStart} />}
       </div>
     </div>
   );
